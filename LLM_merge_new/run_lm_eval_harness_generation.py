@@ -1,6 +1,5 @@
 import os
 os.environ["WANDB_DISABLED"] = "true"
-os.environ["HUGGING_FACE_HUB_TOKEN"] = "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"
 import argparse
 import json, tqdm
 import torch
