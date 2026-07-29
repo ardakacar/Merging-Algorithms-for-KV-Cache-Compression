@@ -18,5 +18,6 @@
     "longchat-7b-v1.5-32k": 31500,
     "Mistral-7B-Instruct-v0.2": 31500,
     "Meta-Llama-3-8B": 8192,
-    "falcon-7b-instruct": 4096
+    "falcon-7b-instruct": 4096,
+    "TinyLlama_v1.1": 1984
 }

@@ -432,6 +432,8 @@ if __name__ == '__main__':
 
 
     model.eval()
+    device = model.get_input_embeddings().weight.device
+    print("Using device:", device)
     max_length = model2maxlen[model_name]
     if data_args.e:
         datasets = ["triviaqa"]
@@ -464,6 +466,11 @@ if __name__ == '__main__':
             if not os.path.exists(f"pred/{model_name}_{model_args.action_name}"):
                 os.makedirs(f"pred/{model_name}_{model_args.action_name}")
             out_path = f"pred/{model_name}_{model_args.action_name}/{dataset}.jsonl"
+
+        if training_args.n_eval_samples is not None:
+            sample_count = min(training_args.n_eval_samples, len(data))
+            data = data.select(range(sample_count))
+
         prompt_format = dataset2prompt[dataset]
         max_gen = dataset2maxlen[dataset]
         preds = get_pred(model, tokenizer, data, max_length, max_gen, prompt_format, dataset, device, model_name)
