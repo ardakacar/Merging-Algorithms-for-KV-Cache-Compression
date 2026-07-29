@@ -364,7 +364,7 @@ class D2O_LayerKVCache:
         k_hh_pruned = past_key_values[0].squeeze()[~mask].view(bsz, num_heads, -1, head_dim)
         v_hh_pruned = past_key_values[1].squeeze()[~mask].view(bsz, num_heads, -1, head_dim)
         # similarity = k_hh_pruned @ k_hh_recent.transpose(-1, -2) # dot product
-        similarity = (k_hh_pruned / torch.norm(k_hh_pruned, dim=-1).unsqueeze(-1).repeat(1, 1, 1, 128)) @ ((k_hh_recent / (torch.norm(k_hh_recent, dim=-1).unsqueeze(-1).repeat(1, 1, 1, 128))).transpose(-1, -2)) # cosin
+        similarity = (k_hh_pruned / torch.norm(k_hh_pruned, dim=-1, keepdim=True)) @ (k_hh_recent / torch.norm(k_hh_recent, dim=-1, keepdim=True)).transpose(-1, -2) # cosin
         max_values, max_indices = similarity.max(dim=-1)
         # breakpoint()   
         if self.threshold == None:
@@ -374,8 +374,8 @@ class D2O_LayerKVCache:
             # breakpoint()
             self.threshold = self.alpha * self.threshold + self.belta * max_values.mean()  # 0.3 0.7
         filter_indices = (max_values.mean(1)>=self.threshold).squeeze(0)
-        merged_indices = max_indices[..., filter_indices].unsqueeze(-1).repeat(1, 1, 1, 128)
-        merge_weights = max_values[..., filter_indices].unsqueeze(-1).repeat(1, 1, 1, 128)
+        merged_indices = max_indices[..., filter_indices].unsqueeze(-1).repeat(1, 1, 1, head_dim)
+        merge_weights = max_values[..., filter_indices].unsqueeze(-1).repeat(1, 1, 1, head_dim)
         
         
         # avg merge
