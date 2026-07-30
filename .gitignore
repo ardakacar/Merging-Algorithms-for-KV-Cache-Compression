@@ -1,3 +1,34 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+.venv/
+venv/
+env/
+d2o_v2/
+
+*.swp
+*.swo
+.vscode/
+.idea/
+
+model_cache/
+models/
+cache/
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+logs/
+outputs/
+output/
+results/
+wandb/
+
+.env
+.env.*
+src/
 
 # Local/generated files
 .DS_Store
