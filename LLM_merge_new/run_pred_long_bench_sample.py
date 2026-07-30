@@ -10,7 +10,7 @@ import argparse
 os.environ["WANDB_DISABLED"] = "true"
 from typing import Optional
 from utils.process_args import process_args
-from transformers import LlamaConfig, MistralConfig, AutoTokenizer
+from transformers import LlamaConfig, MistralConfig, AutoTokenizer, AutoModelForCausalLM
 import os
 from dataclasses import dataclass, field
 import transformers
@@ -332,104 +332,126 @@ if __name__ == '__main__':
     model_name = model_args.model_name_or_path.split("/")[-1]
     # dtype = torch.bfloat16 if training_args.bf16 else torch.float
     dtype = torch.float16
+
+    if model_args.model_type == "qwen2":
+        config = AutoConfig.from_pretrained(
+        model_args.model_name_or_path
+    )
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path,
+            trust_remote_code=True,
+        )
     
-    if 'llama' in model_args.model_name_or_path.lower() or 'longchat' in model_args.model_name_or_path.lower():
+        model = AutoModelForCausalLM.from_pretrained(
+            model_args.model_name_or_path,
+            config=config,
+            cache_dir=training_args.cache_dir,
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
+            attn_implementation="eager",
+            device_map="auto",
+        )
 
-        if model_args.model_type == 'llama3':
-
-            config = AutoConfig.from_pretrained(model_args.model_name_or_path)
-            tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, 
-                                                use_fast=False, 
-                                                trust_remote_code=True, 
-                                               )
-        else:
+    elif 'llama' in model_args.model_name_or_path.lower() or 'longchat' in model_args.model_name_or_path.lower():
         
-
-            config = LlamaConfig.from_pretrained(model_args.model_name_or_path)
-            tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, 
-                                                use_fast=False, 
-                                                trust_remote_code=True, 
-                                                tokenizer_type='llama')
-                                            # model_max_length=training_args.model_max_length)
-
-    if model_args.model_type == 'llama3' :
-           
-        if model_args.use_full:
-
-
-            config.hh_size = model_args.hh_size
-            config.recent_size = model_args.recent_size
-            config.hh_ratio = model_args.hh_ratio
-            config.recent_ratio = model_args.recent_ratio
-
-            model = Llama3ForCausalLM.from_pretrained(
-                pretrained_model_name_or_path=model_args.model_name_or_path,
-                config=config,
-                cache_dir=training_args.cache_dir,
-                torch_dtype=dtype,
-                low_cpu_mem_usage=True,
-                # use_flash_attention_2=True,
-                device_map="auto",
-            )
-        
-        elif model_args.use_real_drop:
-
-            config.hh_size = model_args.hh_size
-            config.recent_size = model_args.recent_size
-            config.hh_ratio = model_args.hh_ratio
-            config.recent_ratio = model_args.recent_ratio
-
-            config.alpha = model_args.alpha
-            config.belta = model_args.belta
+        if 'llama' in model_args.model_name_or_path.lower() or 'longchat' in model_args.model_name_or_path.lower():
+    
+            if model_args.model_type == 'llama3':
+    
+                config = AutoConfig.from_pretrained(model_args.model_name_or_path)
+                tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, 
+                                                    use_fast=False, 
+                                                    trust_remote_code=True, 
+                                                   )
+            else:
             
+    
+                config = LlamaConfig.from_pretrained(model_args.model_name_or_path)
+                tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, 
+                                                    use_fast=False, 
+                                                    trust_remote_code=True, 
+                                                    tokenizer_type='llama')
+                                                # model_max_length=training_args.model_max_length)
+    
+        if model_args.model_type == 'llama3' :
+               
+            if model_args.use_full:
+    
+    
+                config.hh_size = model_args.hh_size
+                config.recent_size = model_args.recent_size
+                config.hh_ratio = model_args.hh_ratio
+                config.recent_ratio = model_args.recent_ratio
+    
+                model = Llama3ForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path=model_args.model_name_or_path,
+                    config=config,
+                    cache_dir=training_args.cache_dir,
+                    torch_dtype=dtype,
+                    low_cpu_mem_usage=True,
+                    # use_flash_attention_2=True,
+                    device_map="auto",
+                )
             
-            model = Llama3ForCausalLM_drop.from_pretrained(
-                pretrained_model_name_or_path=model_args.model_name_or_path,
-                config=config,
-                cache_dir=training_args.cache_dir,
-                torch_dtype=dtype,
-                low_cpu_mem_usage=True,
-                # use_flash_attention_2=True,
-                device_map="auto",
-            )
-
-        elif model_args.use_d2o:
-
-            config.hh_size = model_args.hh_size
-            config.recent_size = model_args.recent_size
-            config.hh_ratio = model_args.hh_ratio
-            config.recent_ratio = model_args.recent_ratio
-            config.alpha = model_args.alpha
-            config.belta = model_args.belta
-
-
-            model = Llama3ForCausalLM_D2O.from_pretrained(
-                pretrained_model_name_or_path=model_args.model_name_or_path,
-                config=config,
-                cache_dir=training_args.cache_dir,
-                torch_dtype=dtype,
-                low_cpu_mem_usage=True,
-                # use_flash_attention_2=True,
-                device_map="auto",
-            )
-
-        elif model_args.use_real_streaming:
-
-            config.hh_size = model_args.hh_size
-            config.recent_size = model_args.recent_size
-            config.hh_ratio = model_args.hh_ratio
-            config.recent_ratio = model_args.recent_ratio
-
-            model = Llama3ForCausalLM_streaming.from_pretrained(
-                pretrained_model_name_or_path=model_args.model_name_or_path,
-                config=config,
-                cache_dir=training_args.cache_dir,
-                torch_dtype=dtype,
-                low_cpu_mem_usage=True,
-                # use_flash_attention_2=True,
-                device_map="auto",
-            )
-
+            elif model_args.use_real_drop:
+    
+                config.hh_size = model_args.hh_size
+                config.recent_size = model_args.recent_size
+                config.hh_ratio = model_args.hh_ratio
+                config.recent_ratio = model_args.recent_ratio
+    
+                config.alpha = model_args.alpha
+                config.belta = model_args.belta
+                
+                
+                model = Llama3ForCausalLM_drop.from_pretrained(
+                    pretrained_model_name_or_path=model_args.model_name_or_path,
+                    config=config,
+                    cache_dir=training_args.cache_dir,
+                    torch_dtype=dtype,
+                    low_cpu_mem_usage=True,
+                    # use_flash_attention_2=True,
+                    device_map="auto",
+                )
+    
+            elif model_args.use_d2o:
+    
+                config.hh_size = model_args.hh_size
+                config.recent_size = model_args.recent_size
+                config.hh_ratio = model_args.hh_ratio
+                config.recent_ratio = model_args.recent_ratio
+                config.alpha = model_args.alpha
+                config.belta = model_args.belta
+    
+    
+                model = Llama3ForCausalLM_D2O.from_pretrained(
+                    pretrained_model_name_or_path=model_args.model_name_or_path,
+                    config=config,
+                    cache_dir=training_args.cache_dir,
+                    torch_dtype=dtype,
+                    low_cpu_mem_usage=True,
+                    # use_flash_attention_2=True,
+                    device_map="auto",
+                )
+    
+            elif model_args.use_real_streaming:
+    
+                config.hh_size = model_args.hh_size
+                config.recent_size = model_args.recent_size
+                config.hh_ratio = model_args.hh_ratio
+                config.recent_ratio = model_args.recent_ratio
+    
+                model = Llama3ForCausalLM_streaming.from_pretrained(
+                    pretrained_model_name_or_path=model_args.model_name_or_path,
+                    config=config,
+                    cache_dir=training_args.cache_dir,
+                    torch_dtype=dtype,
+                    low_cpu_mem_usage=True,
+                    # use_flash_attention_2=True,
+                    device_map="auto",
+                )
+    
 
     model.eval()
     device = model.get_input_embeddings().weight.device

@@ -19,5 +19,6 @@
     "Mistral-7B-Instruct-v0.2": 31500,
     "Meta-Llama-3-8B": 8192,
     "falcon-7b-instruct": 4096,
-    "TinyLlama_v1.1": 1984
+    "TinyLlama_v1.1": 1984,
+    "Qwen2.5-0.5B": 1984
 }
