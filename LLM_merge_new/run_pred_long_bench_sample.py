@@ -23,7 +23,7 @@ from LMEval_kv_token_merge.modeling_llama3_7b_13b_drop import Llama3ForCausalLM_
 from LMEval_kv_token_merge.modeling_llama3_7b_13b_d2o import Llama3ForCausalLM_D2O, LlamaAttention3_D2O  # 
 from LMEval_kv_token_merge.modeling_llama3_full import Llama3ForCausalLM
 from LMEval_kv_token_merge.modeling_llama3_streaming import Llama3Attention_streaming, Llama3ForCausalLM_streaming
-
+from LMEval_kv_token_merge.modeling_qwen2_d2o import Qwen2ForCausalLM_D2O
 
 TAGET_MODULE_FOR_LLAMA_3 = {
     "llama3": None,
@@ -341,6 +341,13 @@ if __name__ == '__main__':
         tokenizer = AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
             trust_remote_code=True,
+        )
+
+        qwen_model_class = (
+            Qwen2ForCausalLM_D2O
+            if model_args.use_d2o
+            else AutoModelForCausalLM
+
         )
     
         model = AutoModelForCausalLM.from_pretrained(
