@@ -336,7 +336,15 @@ if __name__ == '__main__':
     if model_args.model_type == "qwen2":
         config = AutoConfig.from_pretrained(
         model_args.model_name_or_path
-    )
+        )
+
+        if model_args.use_d2o:
+            config.hh_size = model_args.hh_size
+            config.recent_size = model_args.recent_size
+            config.hh_ratio = model_args.hh_ratio
+            config.recent_ratio = model_args.recent_ratio
+            config.alpha = model_args.alpha
+            config.belta = model_args.belta # typo in original source code, so kept as it is as opposed to delta
 
         tokenizer = AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
