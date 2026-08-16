@@ -21,6 +21,10 @@ class Qwen2AttentionD2O(Qwen2Attention):
         self.layer_nums = config.num_hidden_layers
         self.hh_ratio = config.hh_ratio
         self.recent_ratio = config.recent_ratio
+        self.uniform_hh_ratio = config.hh_ratio
+        self.uniform_recent_ratio = config.recent_ratio
+        self.layer_hh_ratio = 0.0
+        self.layer_recent_ratio = 0.0
         self.hh_size = config.hh_size
         self.recent_size = config.recent_size
         self.alpha = config.alpha
@@ -32,12 +36,17 @@ class Qwen2AttentionD2O(Qwen2Attention):
         self.prefill_size = 0
         self.cache_size = None
 
+        self.multimodal_entropy = 0
+
     def _clean_cache(self):
         self.hh_score = None
         self.threshold = None
         self.prefill_score = None
         self.prefill_size = 0
         self.cache_size = None
+        self.multimodal_entropy = 0
+        self.layer_hh_ratio = 0.0
+        self.layer_recent_ratio = 0.0
 
     def _attention_to_kv_scores(self, attn_weights):
 
@@ -91,8 +100,20 @@ class Qwen2AttentionD2O(Qwen2Attention):
         seq_len = scores.shape[-1]
 
         if self.cache_size is None:
-            self.hh_size = int(seq_len * self.hh_ratio)
-            self.recent_size = int(seq_len * self.recent_ratio)
+            hh_ratio = (
+                self.layer_hh_ratio
+                if self.layer_hh_ratio > 0
+                else self.hh_ratio
+            )
+
+            recent_ratio = (
+                self.layer_recent_ratio
+                if self.layer_recent_ratio > 0
+                else self.recent_ratio
+            )
+
+            self.hh_size = int(seq_len * hh_ratio)
+            self.recent_size = int(seq_len * recent_ratio)
             self.cache_size = self.hh_size + self.recent_size
 
         if seq_len <= self.cache_size:
@@ -297,6 +318,46 @@ class Qwen2AttentionD2O(Qwen2Attention):
 
         return past_key_value
 
+
+    def _handle_d2o_cache(
+            self,
+            attn_weights,
+            past_key_value,
+            q_len,
+            use_cache,
+    ):
+
+        if not use_cache or past_key_value is None:
+            return
+
+        if q_len != 1:
+            self._store_prefill_scores(attn_weights)
+
+            attn_sum = attn_weights.detach().clone().sum(dim = -2)
+            attn_variance = attn_sum.var(dim = -1).mean(dim = 0)
+            attn_variance_min = attn_variance.min()
+            attn_variance_max = attn_variance.max()
+
+            normalized_variance = (
+                attn_variance - attn_variance_min
+            ) / ( attn_variance_max - attn_variance_min + 1e-6 )
+
+            self.multimodal_entropy = normalized_variance.mean(dim = 0)
+            return
+
+        if self.layer_idx in (0, 1, self.layer_nums - 1):
+            return
+
+        if self.hh_score is None and self.prefill_score is not None:
+            scores = self._build_first_decode_scores(attn_weights)
+
+        else:
+            scores = self._attention_to_kv_scores(attn_weights)
+
+
+        self._compress_dynamic_cache(past_key_value, scores)
+
+        
     def forward(
         self,
         hidden_states,
@@ -409,21 +470,12 @@ class Qwen2AttentionD2O(Qwen2Attention):
             training = self.training,
         )
 
-
-        if use_cache and past_key_value is not None:
-
-            if q_len != 1:
-                self._store_prefill_scores(attn_weights)
-
-            elif self.layer_idx not in(0, 1, self.layer_nums - 1):
-
-                if self.hh_score is None and self.prefill_score is not None:
-                    scores = self._build_first_decode_scores(attn_weights)
-
-                else:
-                    scores = self._attention_to_kv_scores(attn_weights)
-
-                self._compress_dynamic_cache(past_key_value, scores)
+        self._handle_d2o_cache(
+            attn_weights,
+            past_key_value,
+            q_len,
+            use_cache,
+        )
 
         attn_output = torch.matmul(
             attn_weights,
@@ -455,6 +507,49 @@ class Qwen2ForCausalLM_D2O(Qwen2ForCausalLM):
                 layer_idx=layer_idx,
             )
 
+
+    def _allocate_dynamic_layer_ratios(self):
+    
+            attention_layers = [
+                layer.self_attn for layer in self.model.layers
+            ]
+    
+            if attention_layers[0].prefill_score is None:
+                return
+    
+            if attention_layers[0].layer_hh_ratio != 0:
+                return
+    
+            rho = (attention_layers[0].uniform_hh_ratio + attention_layers[0].uniform_recent_ratio)
+            if rho <= 0:
+                return
+    
+            layer_entropies = torch.stack(
+                [
+                    attn.multimodal_entropy
+                    for attn in attention_layers
+                ]
+            )
+    
+            weights = torch.softmax(-layer_entropies, dim = 0)
+    
+            dynamic_layer_ratios = (weights * len(attention_layers) * rho)
+    
+            dynamic_layer_ratios = torch.clamp(
+                dynamic_layer_ratios,
+                min = 0.01,
+                max = 1.0,
+            )
+    
+            hh_split_ratio = (attention_layers[0].uniform_hh_ratio / rho)
+            recent_split_ratio = (attention_layers[0].uniform_recent_ratio / rho)
+    
+            for idx, attn in enumerate(attention_layers):
+                layer_ratio = dynamic_layer_ratios[idx].item()
+    
+                attn.layer_hh_ratio = (layer_ratio * hh_split_ratio)
+                attn.layer_recent_ratio = (layer_ratio * recent_split_ratio)
+
     def forward(
             self,
             input_ids = None,
@@ -468,6 +563,18 @@ class Qwen2ForCausalLM_D2O(Qwen2ForCausalLM):
             output_hidden_states = None,
             return_dict = None,
     ):
+
+        if input_ids is not None:
+            current_q_len = input_ids.shape[1]
+        elif inputs_embeds is not None:
+            current_q_len = inputs_embeds.shape[1]
+        else:
+            current_q_len = None
+
+        if current_q_len == 1:
+            self._allocate_dynamic_layer_ratios()
+
+        
         if (
             isinstance(past_key_values, Cache) and attention_mask is not None and position_ids is not None
         ):
