@@ -601,3 +601,9 @@ class Qwen2ForCausalLM_D2O(Qwen2ForCausalLM):
             output_hidden_states = output_hidden_states,
             return_dict = return_dict,
         )
+
+
+    def _clean_cache(self):
+
+        for layer in self.model.layers:
+            layer.self_attn._clean_cache()

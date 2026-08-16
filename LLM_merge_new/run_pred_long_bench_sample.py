@@ -302,6 +302,8 @@ def get_pred(model, tokenizer, data, max_length, max_gen, prompt_format, dataset
                         # breakpoint()
                         m._clean_cache()
 
+        elif model_args.model_type == 'qwen2' and model_args.use_d2o:
+            model._clean_cache()
     
         pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
         pred = post_process(pred, model_name)
@@ -358,7 +360,7 @@ if __name__ == '__main__':
 
         )
     
-        model = AutoModelForCausalLM.from_pretrained(
+        model = qwen_model_class.from_pretrained(
             model_args.model_name_or_path,
             config=config,
             cache_dir=training_args.cache_dir,
