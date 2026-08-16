@@ -1,10 +1,16 @@
+import math
+import torch
+import torch.nn.functional as F
+
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     Qwen2ForCausalLM,
+    apply_rotary_pos_emb,
+    repeat_kv,
 )
 from transformers.cache_utils import Cache
-import torch
+
 
 
 class Qwen2AttentionD2O(Qwen2Attention):
@@ -15,7 +21,7 @@ class Qwen2AttentionD2O(Qwen2Attention):
         self.layer_nums = config.num_hidden_layers
         self.hh_ratio = config.hh_ratio
         self.recent_ratio = config.recent_ratio
-        self.hh_ratio = config.hh_ratio
+        self.hh_size = config.hh_size
         self.recent_size = config.recent_size
         self.alpha = config.alpha
         self.belta = config.belta
@@ -224,10 +230,10 @@ class Qwen2AttentionD2O(Qwen2Attention):
         )
 
         merged_values = torch.scatter_reduce(
-            input = kept_keys,
+            input = kept_values,
             dim = 2,
             index = merged_indices,
-            src = merge_weights * keys_to_merge,
+            src = merge_weights * values_to_merge,
             reduce = "mean",
             include_self = True,
         )
@@ -260,6 +266,183 @@ class Qwen2AttentionD2O(Qwen2Attention):
             index = keep_idx,
         )
 
+    def _compress_dynamic_cache(self, past_key_value, scores):
+
+        if past_key_value is None:
+            return past_key_value
+
+        key_states = past_key_value.key_cache[self.layer_idx]
+        value_states = past_key_value.value_cache[self.layer_idx]
+
+        if key_states.shape[-2] != scores.shape[-1]:
+            raise ValueError(
+                "Lenghts of cache and attention-score dont match"
+                f"Cache = {key_states.shape[-2]}, scores = {scores.shape[-1]}"
+            )
+
+        self._update_hh_score(scores)
+
+        keep_idx = self._select_keep_indices(self.hh_score)
+        if keep_idx is None:
+            return past_key_value
+
+        kept_k, kept_v, pruned_k, pruned_v = self._split_cache(key_states, value_states, keep_idx)
+
+        merged_k, merged_v = self._merge_pruned_into_kept(kept_k, kept_v, pruned_k, pruned_v)
+
+        past_key_value.key_cache[self.layer_idx] = merged_k
+        past_key_value.value_cache[self.layer_idx] = merged_v
+
+        self._prune_hh_score(keep_idx)
+
+        return past_key_value
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask = None,
+        position_ids = None,
+        past_key_value = None,
+        output_attentions = False,
+        use_cache = False,
+        **kwargs,
+    ):
+
+        bsz, q_len, _ = hidden_states.size()
+
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        query_states = query_states.view(
+            bsz, q_len, self.num_heads, self.head_dim
+        ).transpose(1,2)
+
+        key_states = key_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim
+        ).transpose(1,2)
+
+        value_states = value_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim
+        ).transpose(1,2)
+
+        kv_seq_len = key_states.shape[-2]
+
+        if past_key_value is not None:
+            kv_seq_len += past_key_value.get_usable_length(
+                kv_seq_len,
+                self.layer_idx,
+            )
+
+        rotary_seq_len = kv_seq_len
+
+        if position_ids is not None:
+            rotary_seq_len = max(
+                rotary_seq_len,
+                int(position_ids.max().item()) + 1,
+            )
+
+        cos, sin = self.rotary_emb(value_states, seq_len = rotary_seq_len)
+
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states,
+            key_states,
+            cos,
+            sin,
+            position_ids,
+        )
+
+        if past_key_value is not None:
+            cache_kwargs = {
+                "sin": sin,
+                "cos": cos,
+            }
+
+            key_states, value_states = past_key_value.update(
+                key_states,
+                value_states,
+                self.layer_idx,
+                cache_kwargs,
+            )
+
+        key_states = repeat_kv(
+            key_states,
+            self.num_key_value_groups,
+        )
+
+        value_states = repeat_kv(
+            value_states,
+            self.num_key_value_groups,
+        )
+
+        attn_weights = (
+            torch.matmul(
+                query_states,
+                key_states.transpose(2,3),
+            ) / math.sqrt(self.head_dim)
+        )
+
+        if attention_mask is not None:
+            required_len = attn_weights.shape[-1]
+
+            if attention_mask.shape[-1] > required_len:
+                attention_mask = attention_mask[..., -required_len:]
+
+            if attention_mask.shape[-1] != required_len:
+                raise ValueError(
+                    "Attention mask - cache length mismatch:"
+                    f"Mask = {attention_mask.shape[-1]}, "
+                    f"Cache = {required_len}"
+                )
+
+            attn_weights = attn_weights + attention_mask
+
+        attn_weights = F.softmax(
+            attn_weights,
+            dim = -1,
+            dtype = torch.float32,
+        ).to(query_states.dtype)
+
+        attn_weights = F.dropout(
+            attn_weights,
+            p = self.attention_dropout,
+            training = self.training,
+        )
+
+
+        if use_cache and past_key_value is not None:
+
+            if q_len != 1:
+                self._store_prefill_scores(attn_weights)
+
+            elif self.layer_idx not in(0, 1, self.layer_nums - 1):
+
+                if self.hh_score is None and self.prefill_score is not None:
+                    scores = self._build_first_decode_scores(attn_weights)
+
+                else:
+                    scores = self._attention_to_kv_scores(attn_weights)
+
+                self._compress_dynamic_cache(past_key_value, scores)
+
+        attn_output = torch.matmul(
+            attn_weights,
+            value_states,
+        )
+
+        attn_output = (
+            attn_output
+            .transpose(1,2)
+            .contiguous()
+            .reshape(bsz, q_len, self.hidden_size)
+        )
+
+        attn_output = self.o_proj(attn_output)
+
+        if not output_attentions:
+            attn_weights = None
+
+        return attn_output, attn_weights, past_key_value
 
 class Qwen2ForCausalLM_D2O(Qwen2ForCausalLM):
 
