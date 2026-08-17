@@ -499,6 +499,7 @@ class Qwen2AttentionD2O(Qwen2Attention):
 class Qwen2ForCausalLM_D2O(Qwen2ForCausalLM):
 
     def __init__(self, config: Qwen2Config):
+        config._attn_implementation = "eager"
         super().__init__(config)
 
         for layer_idx, layer in enumerate(self.model.layers):
