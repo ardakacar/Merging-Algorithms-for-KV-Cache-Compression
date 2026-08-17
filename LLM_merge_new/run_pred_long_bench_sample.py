@@ -444,7 +444,7 @@ def get_pred(model, tokenizer, data, max_length, max_gen, prompt_format, dataset
                       })
 
     hook_handle.remove()
-    
+
     return preds
 
 def seed_everything(seed):
@@ -610,10 +610,7 @@ if __name__ == '__main__':
     device = model.get_input_embeddings().weight.device
     print("Using device:", device)
     max_length = model2maxlen[model_name]
-    if data_args.e:
-        datasets = ["triviaqa"]
-    else:
-        datasets = ["triviaqa"]
+    datasets = [data_args.dataset]
     # we design specific prompt format and max generation length for each task, feel free to modify them to optimize model output
     dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
     dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
