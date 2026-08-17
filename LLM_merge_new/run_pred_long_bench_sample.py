@@ -1,5 +1,6 @@
 
 import os
+import time
 from datasets import load_dataset
 import torch
 import json
@@ -32,6 +33,51 @@ TAGET_MODULE_FOR_LLAMA_3 = {
     "real_stream": Llama3Attention_streaming
 }
 
+class TimingStreamer:
+    def __init__(self):
+        self.token_times = []
+        self.prompt_seen = False
+
+    def put(self, value):
+        if not self.prompt_seen:
+            self.prompt_seen = True
+            return
+
+        self.token_times.append(time.perf_counter())
+
+    def end(self):
+        pass
+
+
+class KVCacheTracker:
+    def __init__(self):
+        self.layer_lengths = []
+        self.kv_bytes = 0
+
+    def reset(self):
+        self.layer_lengths = []
+        self.kv_bytes = 0
+
+    def hook(self, module, inputs, output):
+        past_key_values = getattr(output, "past_key_values", None)
+
+        if past_key_values is None:
+            return
+
+        layer_lengths = []
+        kv_bytes = 0
+
+        for layer_cache in past_key_values:
+            key_states, value_states = layer_cache[:2]
+            layer_lengths.append(key_states.shape[-2])
+
+            kv_bytes += (
+                key_states.numel() * key_states.element_size()
+                + value_states.numel() * value_states.element_size()
+            )
+
+        self.layer_lengths = layer_lengths
+        self.kv_bytes = kv_bytes
 
 
 @dataclass
@@ -231,7 +277,12 @@ def post_process(response, model_name):
 
 def get_pred(model, tokenizer, data, max_length, max_gen, prompt_format, dataset, device, model_name):
     preds = []
+
+    kv_tracker = KVCacheTracker()
+    hook_handle = model.register_forward_hook(kv_tracker.hook)
+
     for json_obj in tqdm(data):
+        kv_tracker.reset()
         prompt = prompt_format.format(**json_obj)
         # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
         tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
@@ -244,6 +295,14 @@ def get_pred(model, tokenizer, data, max_length, max_gen, prompt_format, dataset
             prompt = build_chat(tokenizer, prompt, model_name)
         input = tokenizer(prompt, truncation=False, return_tensors="pt").to(device)
         context_length = input.input_ids.shape[-1]
+
+        timing_streamer = TimingStreamer()
+
+        if str(device).startswith("mps"):
+            torch.mps.synchronize()
+
+        generation_start = time.perf_counter()
+
         if dataset == "samsum": # prevent illegal output on samsum (model endlessly repeat "\nDialogue"), might be a prompting issue
             output = model.generate(
                 **input,
@@ -253,6 +312,7 @@ def get_pred(model, tokenizer, data, max_length, max_gen, prompt_format, dataset
                 temperature=1.0,
                 min_length=context_length+1,
                 eos_token_id=[tokenizer.eos_token_id, tokenizer.encode("\n", add_special_tokens=False)[-1]],
+                streamer = timing_streamer,
             )[0]
         else:
             output = model.generate(
@@ -261,7 +321,67 @@ def get_pred(model, tokenizer, data, max_length, max_gen, prompt_format, dataset
                 num_beams=1,
                 do_sample=False,
                 temperature=1.0,
+                streamer = timing_streamer,
             )[0]
+
+        if str(device).startswith("mps"):
+            torch.mps.synchronize()
+
+        generation_runtime = time.perf_counter() - generation_start
+        generated_tokens = output.shape[-1] - context_length
+
+        token_times = timing_streamer.token_times
+
+        ttft = None
+        mean_itl = None
+        itl_count = 0
+
+        if len(token_times) > 0:
+            ttft = token_times[0] - generation_start
+
+        if len(token_times) > 1:
+            inter_token_latencies = [
+                token_times[i] - token_times[i - 1] 
+                for i in range(1, len(token_times))
+            ]
+
+            mean_itl = (
+                sum(inter_token_latencies)
+                / len(inter_token_latencies)
+            )
+            itl_count = len(inter_token_latencies)
+
+        if len(token_times) != generated_tokens:
+            print(
+                f"WARNING: Generated tokens = {generated_tokens},"
+                f"Timed Tokens = {len(token_times)}"
+            )
+
+
+        layer_lengths = kv_tracker.layer_lengths
+
+        if len(layer_lengths) > 0:
+            actual_kv_tokens = sum(layer_lengths)
+
+            logical_cache_length = max(layer_lengths)
+
+            num_layers = len(layer_lengths)
+
+            full_equivalent_kv_tokens = (logical_cache_length * num_layers)
+
+            kv_retention = (actual_kv_tokens / full_equivalent_kv_tokens)
+
+            kv_reduction = 1.0 - kv_retention
+
+            kv_memory_mb = (
+                kv_tracker.kv_bytes / (1024 ** 2)
+            )
+        else:
+            actual_kv_tokens = None
+            full_equivalent_kv_tokens = None
+            kv_retention = None
+            kv_reduction = None
+            kv_memory_mb = None
 
         ################## modified here #############################
         
@@ -307,8 +427,24 @@ def get_pred(model, tokenizer, data, max_length, max_gen, prompt_format, dataset
     
         pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
         pred = post_process(pred, model_name)
-        preds.append({"pred": pred, "answers": json_obj["answers"], "all_classes": json_obj["all_classes"], "length": json_obj["length"]})
-        
+        preds.append({"pred": pred,
+                      "answers": json_obj["answers"],
+                      "all_classes": json_obj["all_classes"],
+                      "length": json_obj["length"],
+                      "generation_runtime_s": generation_runtime,
+                      "generated_tokens": generated_tokens,
+                      "ttft_s": ttft,
+                      "mean_itl_s": mean_itl,
+                      "itl_count": itl_count,
+                      "kv_tokens": actual_kv_tokens,
+                      "full_equivalent_kv_tokens": full_equivalent_kv_tokens,
+                      "kv_retention": kv_retention,
+                      "kv_reduction": kv_reduction,
+                      "kv_memory_mb": kv_memory_mb
+                      })
+
+    hook_handle.remove()
+    
     return preds
 
 def seed_everything(seed):
