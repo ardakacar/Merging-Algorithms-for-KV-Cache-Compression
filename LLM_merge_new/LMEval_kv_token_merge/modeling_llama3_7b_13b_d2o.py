@@ -311,7 +311,7 @@ class D2O_LayerKVCache:
         self.threshold = None
         self.alpha = alpha
         self.belta = belta
-        print(f"D2O layerKVCache size initialization before dynamic allocation : {hh_ratio}, {recent_ratio}")
+        # print(f"D2O layerKVCache size initialization before dynamic allocation : {hh_ratio}, {recent_ratio}")
 
     def __call__(self, past_key_values, attn_score_cache, layer_hh_ratio, layer_recent_ratio, prefill_size):
 
@@ -673,10 +673,10 @@ class LlamaAttention3_D2O(nn.Module):
         #     print('self.layer_idx', self.layer_idx)
         #     print('past_key_value shape', past_key_value[0].shape)
 
-        if self.layer_idx == 6 and query_states.shape[-2]==1:
-            print('self.layer_ratio: ', self.layer_hh_ratio)
-            print('self.layer_idx', self.layer_idx)
-            print('past_key_value shape', past_key_value[0].shape)
+        #if self.layer_idx == 6 and query_states.shape[-2]==1:
+        #    print('self.layer_ratio: ', self.layer_hh_ratio)
+        #    print('self.layer_idx', self.layer_idx)
+        #    print('past_key_value shape', past_key_value[0].shape)
         
         # print('KV cache shape: ', past_key_value[0].shape)
 
